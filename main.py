@@ -36,7 +36,7 @@ def generate_summary(article):
     clean_text = re.sub('<[^<]+?>', '', article['content'])
     prompt = f"以下の学習コラムの内容をThreads向けに魅力的に要約して。150文字程度。最後に『続きはリプライのリンクからチェック！』と入れて。\n\nタイトル：{article['title']}\n内容：{clean_text[:2000]}"
     
-    response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
+    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
     return response.text
 
 # --- 3. Threads投稿（監視・公開プロセス） ---
