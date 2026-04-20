@@ -4,6 +4,7 @@ import requests
 import random
 import re
 from google import genai
+from google.genai.errors import APIError, ServerError
 from dotenv import load_dotenv
 
 # .env ファイルを読み込む
@@ -12,6 +13,22 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 THREADS_ACCESS_TOKEN = os.getenv("THREADS_ACCESS_TOKEN")
 THREADS_USER_ID = os.getenv("THREADS_USER_ID")
+
+def get_gemini_model_candidates():
+    models_env = os.getenv("GEMINI_MODELS")
+    if models_env:
+        models = [model.strip() for model in models_env.split(",") if model.strip()]
+        if models:
+            return models
+
+    primary_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    fallback_models = ["gemini-2.0-flash"]
+
+    candidates = [primary_model]
+    for model in fallback_models:
+        if model not in candidates:
+            candidates.append(model)
+    return candidates
 
 # --- 1. WordPressからランダム取得 ---
 def get_random_article():
@@ -30,14 +47,44 @@ def get_random_article():
         print(f"❌ WP取得エラー: {e}")
         return None
 
-# --- 2. 最新Gemini 3 Flash で要約 ---
-def generate_summary(article):
+# --- 2. Gemini で要約 ---
+def generate_summary(article, max_retries=5):
     client = genai.Client(api_key=GEMINI_API_KEY)
     clean_text = re.sub('<[^<]+?>', '', article['content'])
     prompt = f"以下の学習コラムの内容をThreads向けに魅力的に要約して。150文字程度。最後に『続きはリプライのリンクからチェック！』と入れて。\n\nタイトル：{article['title']}\n内容：{clean_text[:2000]}"
-    
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-    return response.text
+    model_candidates = get_gemini_model_candidates()
+
+    for model_index, model_name in enumerate(model_candidates, start=1):
+        print(f"🤖 要約モデルを試行中: {model_name} ({model_index}/{len(model_candidates)})")
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = client.models.generate_content(model=model_name, contents=prompt)
+                return response.text
+            except (ServerError, APIError) as e:
+                error_text = str(e)
+                is_retryable = "503" in error_text or "UNAVAILABLE" in error_text
+
+                if not is_retryable:
+                    print(f"❌ Gemini要約エラー（{model_name}）: {e}")
+                    return None
+
+                if attempt == max_retries:
+                    print(f"⚠️ {model_name} は混雑のため上限まで再試行しました。")
+                    break
+
+                wait_seconds = min(2 ** attempt, 30)
+                print(
+                    f"⚠️ {model_name} が混雑中のため再試行します "
+                    f"({attempt}/{max_retries}, {wait_seconds}秒待機)"
+                )
+                time.sleep(wait_seconds)
+            except Exception as e:
+                print(f"❌ Gemini要約エラー（{model_name}）: {e}")
+                return None
+
+    print("❌ すべてのGeminiモデルで要約に失敗しました。")
+    return None
 
 # --- 3. Threads投稿（監視・公開プロセス） ---
 def post_to_threads_with_check(text, reply_to_id=None):
@@ -91,7 +138,11 @@ if __name__ == "__main__":
     if article_data:
         print(f"✅ 記事取得: {article_data['title']}")
         summary = generate_summary(article_data)
-        
+
+        if not summary:
+            print("❌ 要約の生成に失敗したため、今回の投稿は中止します。")
+            raise SystemExit(1)
+
         print("\n1/2 親ポストを送信中...")
         parent_post_id = post_to_threads_with_check(summary)
         
