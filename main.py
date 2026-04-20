@@ -14,6 +14,19 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 THREADS_ACCESS_TOKEN = os.getenv("THREADS_ACCESS_TOKEN")
 THREADS_USER_ID = os.getenv("THREADS_USER_ID")
 
+def parse_retry_delay_seconds(error_text):
+    patterns = [
+        r"retryDelay': '([\d.]+)s'",
+        r'Please retry in ([\d.]+)s',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, error_text)
+        if match:
+            return max(1, int(float(match.group(1))))
+
+    return None
+
 def get_gemini_model_candidates():
     models_env = os.getenv("GEMINI_MODELS")
     if models_env:
@@ -63,9 +76,23 @@ def generate_summary(article, max_retries=5):
                 return response.text
             except (ServerError, APIError) as e:
                 error_text = str(e)
-                is_retryable = "503" in error_text or "UNAVAILABLE" in error_text
+                retry_delay_seconds = parse_retry_delay_seconds(error_text)
+                is_unavailable = "503" in error_text or "UNAVAILABLE" in error_text
+                is_rate_limited = "429" in error_text or "RESOURCE_EXHAUSTED" in error_text
 
-                if not is_retryable:
+                if is_rate_limited:
+                    if retry_delay_seconds:
+                        print(
+                            f"⚠️ {model_name} は利用上限に達しました。"
+                            f" 約{retry_delay_seconds}秒後に再試行可能ですが、次のモデルへ切り替えます。"
+                        )
+                    else:
+                        print(
+                            f"⚠️ {model_name} は利用上限に達したため、次のモデルへ切り替えます。"
+                        )
+                    break
+
+                if not is_unavailable:
                     print(f"❌ Gemini要約エラー（{model_name}）: {e}")
                     return None
 
