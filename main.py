@@ -3,6 +3,7 @@ import time
 import requests
 import random
 import re
+import json
 from google import genai
 from google.genai.errors import APIError, ServerError
 from dotenv import load_dotenv
@@ -42,6 +43,17 @@ def get_gemini_model_candidates():
         if model not in candidates:
             candidates.append(model)
     return candidates
+
+def parse_json_response(response, context):
+    try:
+        return response.json()
+    except json.decoder.JSONDecodeError:
+        response_preview = response.text.strip()[:300] or "<empty response>"
+        print(
+            f"❌ {context} でJSON解析に失敗しました: "
+            f"status={response.status_code}, body={response_preview}"
+        )
+        return None
 
 # --- 1. WordPressからランダム取得 ---
 def get_random_article():
@@ -127,7 +139,10 @@ def post_to_threads_with_check(text, reply_to_id=None):
         params['reply_to_id'] = reply_to_id
         
     # A. コンテナ作成
-    res = requests.post(base_url, params=params).json()
+    response = requests.post(base_url, params=params, timeout=30)
+    res = parse_json_response(response, "Threadsコンテナ作成")
+    if not res:
+        return None
     creation_id = res.get('id')
     
     if not creation_id:
@@ -137,10 +152,14 @@ def post_to_threads_with_check(text, reply_to_id=None):
     # (以下、ステータス監視と公開プロセスは同じです)
     print(f"   投稿準備中 (ID: {creation_id})...")
     for _ in range(10):
-        status_res = requests.get(
+        status_response = requests.get(
             f"https://graph.threads.net/v1.0/{creation_id}", 
-            params={'fields': 'status_code', 'access_token': THREADS_ACCESS_TOKEN}
-        ).json()
+            params={'fields': 'status_code', 'access_token': THREADS_ACCESS_TOKEN},
+            timeout=30,
+        )
+        status_res = parse_json_response(status_response, "Threadsステータス確認")
+        if not status_res:
+            return None
         
         status = status_res.get('status_code')
         if status == 'FINISHED':
@@ -149,12 +168,19 @@ def post_to_threads_with_check(text, reply_to_id=None):
             print(f"❌ Meta側エラー: {status_res}")
             return None
         time.sleep(3)
+    else:
+        print("❌ 投稿ステータスの確認がタイムアウトしました。")
+        return None
 
     # C. 公開（Publish）
-    publish_res = requests.post(
+    publish_response = requests.post(
         f"https://graph.threads.net/v1.0/{THREADS_USER_ID}/threads_publish", 
-        params={'creation_id': creation_id, 'access_token': THREADS_ACCESS_TOKEN}
-    ).json()
+        params={'creation_id': creation_id, 'access_token': THREADS_ACCESS_TOKEN},
+        timeout=30,
+    )
+    publish_res = parse_json_response(publish_response, "Threads公開")
+    if not publish_res:
+        return None
     
     return publish_res.get('id')
 
