@@ -15,6 +15,17 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 THREADS_ACCESS_TOKEN = os.getenv("THREADS_ACCESS_TOKEN")
 THREADS_USER_ID = os.getenv("THREADS_USER_ID")
 
+def get_env_int(name, default):
+    raw_value = os.getenv(name)
+    if not raw_value:
+        return default
+
+    try:
+        return int(raw_value)
+    except ValueError:
+        print(f"⚠️ {name} の値が不正なため、既定値 {default} を使います。")
+        return default
+
 def parse_retry_delay_seconds(error_text):
     patterns = [
         r"retryDelay': '([\d.]+)s'",
@@ -128,6 +139,8 @@ def generate_summary(article, max_retries=5):
 # --- 3. Threads投稿（監視・公開プロセス） ---
 def post_to_threads_with_check(text, reply_to_id=None):
     base_url = f"https://graph.threads.net/v1.0/{THREADS_USER_ID}/threads"
+    status_max_checks = get_env_int("THREADS_STATUS_MAX_CHECKS", 30)
+    status_interval_seconds = get_env_int("THREADS_STATUS_INTERVAL_SECONDS", 5)
     
     params = {
         'access_token': THREADS_ACCESS_TOKEN,
@@ -151,7 +164,8 @@ def post_to_threads_with_check(text, reply_to_id=None):
 
     # (以下、ステータス監視と公開プロセスは同じです)
     print(f"   投稿準備中 (ID: {creation_id})...")
-    for _ in range(10):
+    last_status_res = None
+    for attempt in range(1, status_max_checks + 1):
         status_response = requests.get(
             f"https://graph.threads.net/v1.0/{creation_id}", 
             params={'fields': 'status_code', 'access_token': THREADS_ACCESS_TOKEN},
@@ -160,16 +174,21 @@ def post_to_threads_with_check(text, reply_to_id=None):
         status_res = parse_json_response(status_response, "Threadsステータス確認")
         if not status_res:
             return None
+        last_status_res = status_res
         
         status = status_res.get('status_code')
+        print(f"   ステータス確認 {attempt}/{status_max_checks}: {status}")
         if status == 'FINISHED':
             break
         elif status == 'ERROR':
             print(f"❌ Meta側エラー: {status_res}")
             return None
-        time.sleep(3)
+        time.sleep(status_interval_seconds)
     else:
-        print("❌ 投稿ステータスの確認がタイムアウトしました。")
+        print(
+            "❌ 投稿ステータスの確認がタイムアウトしました。 "
+            f"最終ステータス: {last_status_res}"
+        )
         return None
 
     # C. 公開（Publish）
