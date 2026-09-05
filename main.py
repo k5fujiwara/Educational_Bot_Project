@@ -168,7 +168,7 @@ def post_to_threads_with_check(text, reply_to_id=None):
     for attempt in range(1, status_max_checks + 1):
         status_response = requests.get(
             f"https://graph.threads.net/v1.0/{creation_id}", 
-            params={'fields': 'status_code', 'access_token': THREADS_ACCESS_TOKEN},
+            params={'fields': 'status,error_message', 'access_token': THREADS_ACCESS_TOKEN},
             timeout=30,
         )
         status_res = parse_json_response(status_response, "Threadsステータス確認")
@@ -176,12 +176,16 @@ def post_to_threads_with_check(text, reply_to_id=None):
             return None
         last_status_res = status_res
         
-        status = status_res.get('status_code')
+        status = status_res.get('status')
         print(f"   ステータス確認 {attempt}/{status_max_checks}: {status}")
         if status == 'FINISHED':
             break
-        elif status == 'ERROR':
-            print(f"❌ Meta側エラー: {status_res}")
+        elif status in ('ERROR', 'EXPIRED'):
+            error_message = status_res.get('error_message')
+            if error_message:
+                print(f"❌ Meta側エラー: status={status}, error_message={error_message}")
+            else:
+                print(f"❌ Meta側エラー: {status_res}")
             return None
         time.sleep(status_interval_seconds)
     else:
